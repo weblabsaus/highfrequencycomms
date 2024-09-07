@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Inaudible Morse Code Translator</title>
+    <title>Inaudible Morse Code Translator with PiP</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -16,20 +16,55 @@
             width: 100%;
             height: 100px;
         }
+        #status {
+            color: red;
+            margin-top: 10px;
+        }
+        #instructions {
+            color: gray;
+            margin-top: 10px;
+        }
+        #pipVideo {
+            display: none;
+            width: 200px;
+            height: 150px;
+            background: #000;
+        }
     </style>
 </head>
 <body>
-    <h1>Inaudible Morse Code Translator</h1>
+    <h1>Inaudible Morse Code Translator with PiP</h1>
 
+    <!-- Input Section -->
     <label for="textInput">Enter Text:</label>
     <textarea id="textInput" placeholder="Type your text here..."></textarea>
     <button onclick="playMorse()">Play Morse Code</button>
 
+    <div id="status"></div>
+
+    <!-- Instructions -->
+    <div id="instructions">
+        <p>Click "Play Morse Code" to generate inaudible Morse code sound.</p>
+        <p>Click "Start Decoding Morse Code" to listen and decode from audio input.</p>
+    </div>
+
+    <!-- Customization Options -->
+    <br>
+    <label for="textColor">Text Color:</label>
+    <input type="color" id="textColor" value="#000000">
+    <label for="bgColor">Background Color:</label>
+    <input type="color" id="bgColor" value="#ffffff">
+    <label for="bgImage">Background Image:</label>
+    <input type="file" id="bgImage" accept="image/*">
     <br><br>
 
-    <label for="morseOutput">Decoded Text from Morse:</label>
+    <button onclick="startDecoding()">Start Decoding Morse Code</button>
+    <button onclick="togglePiP()">Toggle PiP Live Feed</button>
+
+    <!-- Picture-in-Picture Video Feed -->
+    <video id="pipVideo" autoplay></video>
+
     <textarea id="morseOutput" readonly></textarea>
-    <button onclick="decodeMorse()">Decode Morse Code</button>
 
     <script>
         const morseCode = {
@@ -39,6 +74,15 @@
             'Y': '-.--', 'Z': '--..', '1': '.----', '2': '..---', '3': '...--', '4': '....-', '5': '.....',
             '6': '-....', '7': '--...', '8': '---..', '9': '----.', '0': '-----', ' ': ' '
         };
+
+        const targetFrequency = 21000; // 21 kHz
+        let morseSignal = ''; // Store the decoded Morse signal
+        let lastDetected = false; // Track the last detected state
+        let lastTime = 0; // Track the last detected time
+        let pipVideoElement = document.getElementById('pipVideo');
+        let textColorInput = document.getElementById('textColor');
+        let bgColorInput = document.getElementById('bgColor');
+        let bgImageInput = document.getElementById('bgImage');
 
         function textToMorse(text) {
             return text.toUpperCase().split('').map(char => morseCode[char] || '').join(' ');
@@ -51,13 +95,17 @@
 
         function playMorse() {
             const text = document.getElementById('textInput').value;
+            if (!text) {
+                document.getElementById('status').innerText = 'Please enter some text to translate!';
+                return;
+            }
             const morse = textToMorse(text);
             const context = new (window.AudioContext || window.webkitAudioContext)();
             const oscillator = context.createOscillator();
             const gainNode = context.createGain();
-            gainNode.gain.value = 0.1; // Very low volume to protect ears
+            gainNode.gain.value = 0.1; // Low volume for inaudible sound
 
-            oscillator.frequency.value = 21000; // 21 kHz, inaudible to humans
+            oscillator.frequency.value = targetFrequency; // 21 kHz frequency, inaudible to humans
             oscillator.connect(gainNode);
             gainNode.connect(context.destination);
             oscillator.start();
@@ -65,10 +113,10 @@
             let currentTime = context.currentTime;
             for (const symbol of morse) {
                 if (symbol === '.') {
-                    gainNode.gain.setValueAtTime(0.1, currentTime);
+                    gainNode.gain.setValueAtTime(0.1, currentTime); // Dot duration
                     currentTime += 0.1;
                 } else if (symbol === '-') {
-                    gainNode.gain.setValueAtTime(0.1, currentTime);
+                    gainNode.gain.setValueAtTime(0.1, currentTime); // Dash duration
                     currentTime += 0.3;
                 }
                 gainNode.gain.setValueAtTime(0, currentTime);
@@ -77,11 +125,100 @@
             oscillator.stop(currentTime);
         }
 
-        function decodeMorse() {
-            const audioInput = document.getElementById('morseOutput').value; // Placeholder for actual audio input
-            const decodedText = morseToText(audioInput); // Mock decoding since capturing is complex
-            document.getElementById('textInput').value = decodedText;
+        async function startDecoding() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                document.getElementById('status').innerText = "Your browser does not support audio input.";
+                return;
+            }
+
+            try {
+                document.getElementById('status').innerText = 'Accessing microphone...';
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(stream);
+                const analyser = audioContext.createAnalyser();
+                analyser.fftSize = 2048;
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+
+                source.connect(analyser);
+                pipVideoElement.srcObject = stream; // Display the live video feed
+                decodeAudio(analyser, dataArray);
+                document.getElementById('status').innerText = 'Decoding audio input...';
+            } catch (err) {
+                document.getElementById('status').innerText = "Error accessing audio input: " + err.message;
+                console.error("Error accessing audio input:", err);
+            }
         }
+
+        function decodeAudio(analyser, dataArray) {
+            analyser.getByteFrequencyData(dataArray);
+            const nyquist = analyser.context.sampleRate / 2;
+            const targetIndex = Math.round(targetFrequency / nyquist * analyser.fftSize / 2);
+
+            const signalDetected = dataArray[targetIndex] > 128; // Arbitrary threshold for detecting sound
+            const currentTime = performance.now();
+
+            if (signalDetected && !lastDetected) {
+                const duration = currentTime - lastTime;
+                if (duration > 200) {
+                    morseSignal += ' ';
+                } else if (duration > 100) {
+                    morseSignal += ' ';
+                }
+            } else if (!signalDetected && lastDetected) {
+                const duration = currentTime - lastTime;
+                if (duration > 200) {
+                    morseSignal += '-';
+                } else if (duration > 50) {
+                    morseSignal += '.';
+                }
+            }
+
+            lastDetected = signalDetected;
+            lastTime = currentTime;
+
+            const decodedText = morseToText(morseSignal);
+            document.getElementById('morseOutput').value = decodedText;
+
+            if (decodedText.endsWith('.')) {
+                morseSignal = ''; // Reset after full stop
+                document.getElementById('morseOutput').value = '';
+            }
+
+            requestAnimationFrame(() => decodeAudio(analyser, dataArray));
+        }
+
+        async function togglePiP() {
+            try {
+                if (pipVideoElement !== document.pictureInPictureElement) {
+                    await pipVideoElement.requestPictureInPicture();
+                } else {
+                    await document.exitPictureInPicture();
+                }
+            } catch (error) {
+                console.error(error);
+            }
+        }
+
+        textColorInput.addEventListener('input', () => {
+            pipVideoElement.style.color = textColorInput.value;
+        });
+
+        bgColorInput.addEventListener('input', () => {
+            pipVideoElement.style.backgroundColor = bgColorInput.value;
+        });
+
+        bgImageInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    pipVideoElement.style.backgroundImage = `url(${e.target.result})`;
+                };
+                reader.readAsDataURL(file);
+            }
+        });
     </script>
 </body>
 </html>
